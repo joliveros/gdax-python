@@ -11,3 +11,5 @@ gdax/__pycache__/
 .cache/
 .coverage
 tests/__pycache__/
+.python-version
+.pytest_cache
