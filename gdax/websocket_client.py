@@ -6,34 +6,45 @@
 # Template object to receive messages from the gdax Websocket Feed
 
 from __future__ import print_function
+import alog
 import json
 import base64
 import hmac
 import hashlib
 import time
+import sys
 from threading import Thread
 from websocket import create_connection, WebSocketConnectionClosedException
-from pymongo import MongoClient
-from gdax.gdax_auth import get_auth_headers
 
 
 class WebsocketClient(object):
-    def __init__(self, url="wss://ws-feed.gdax.com", products=None, message_type="subscribe", mongo_collection=None,
-                 should_print=True, auth=False, api_key="", api_secret="", api_passphrase="", channels=None):
-        self.url = url
-        self.products = products
-        self.channels = channels
-        self.type = message_type
-        self.stop = False
-        self.error = None
-        self.ws = None
-        self.thread = None
-        self.auth = auth
+    def __init__(self, url="wss://ws-feed.gdax.com", products=None,
+                 message_type="subscribe", mongo_collection=None,
+                 should_print=True, auth=False, api_key="", api_secret="",
+                 api_passphrase="", channels=None, heartbeat=True,
+                 keepalive=15, heartbeat_delay=2):
         self.api_key = api_key
-        self.api_secret = api_secret
         self.api_passphrase = api_passphrase
-        self.should_print = should_print
+        self.api_secret = api_secret
+        self.auth = auth
+        self.error = None
+        self.heartbeat = heartbeat
+        self.keepalive = keepalive
         self.mongo_collection = mongo_collection
+        self.products = products
+        self.should_print = should_print
+        self.stop = False
+        self.thread = None
+        self.type = message_type
+        self.url = url
+        self.ws = None
+        self.heartbeat_delay = heartbeat_delay
+        self.last_heartbeat = 0
+
+        self.channels = channels
+
+        if self.channels is None:
+            self.channels = []
 
     def start(self):
         def _go():
@@ -46,6 +57,28 @@ class WebsocketClient(object):
         self.thread = Thread(target=_go)
         self.thread.start()
 
+        try:
+            while True:
+                time.sleep(1)
+
+                now = time.time()
+                heartbeat_delay = now - self.last_heartbeat
+
+                alog.debug(f'## last heartbeat: {self.last_heartbeat} '
+                           f'diff: {heartbeat_delay} ###')
+
+                if heartbeat_delay >= self.heartbeat_delay \
+                        and self.last_heartbeat > 0:
+                    self.stop = True
+                    alog.debug('## heartbeat exceeded delay ###')
+
+                if self.stop:
+                    self.start()
+                    break
+
+        except KeyboardInterrupt:
+            sys.exit(0)
+
     def _connect(self):
         if self.products is None:
             self.products = ["BTC-USD"]
@@ -55,10 +88,15 @@ class WebsocketClient(object):
         if self.url[-1] == "/":
             self.url = self.url[:-1]
 
+        if self.heartbeat:
+            if 'heartbeat' not in self.channels:
+                self.channels.append('heartbeat')
+
         if self.channels is None:
             sub_params = {'type': 'subscribe', 'product_ids': self.products}
         else:
-            sub_params = {'type': 'subscribe', 'product_ids': self.products, 'channels': self.channels}
+            sub_params = {'type': 'subscribe', 'product_ids': self.products,
+                          'channels': self.channels}
 
         if self.auth:
             timestamp = str(time.time())
@@ -74,34 +112,40 @@ class WebsocketClient(object):
 
         self.ws = create_connection(self.url)
 
-        if self.type == "heartbeat":
-            self.channels.append('heartbeat')
+        print(sub_params)
 
         self.ws.send(json.dumps(sub_params))
 
     def _listen(self):
+        start_t = time.time()
+
         while not self.stop:
             try:
-                start_t = 0
-                if time.time() - start_t >= 30:
+                if time.time() - start_t >= self.keepalive:
                     # Set a 30 second ping to keep connection alive
                     self.ws.ping("keepalive")
                     start_t = time.time()
+
                 data = self.ws.recv()
                 msg = json.loads(data)
+
+
+
             except ValueError as e:
                 self.on_error(e)
             except Exception as e:
                 self.on_error(e)
             else:
-                self.on_message(msg)
+                if msg.get('type', None) == 'heartbeat':
+                    self.check_heartbeat(msg)
+                else:
+                    self.on_message(msg)
 
     def _disconnect(self):
-        if self.type == "heartbeat":
-            self.ws.send(json.dumps({
-                "type": "unsubscribe",
-                "channels": self.channels
-            }))
+        self.ws.send(json.dumps({
+            "type": "unsubscribe",
+            "channels": self.channels
+        }))
 
         try:
             if self.ws:
@@ -113,7 +157,6 @@ class WebsocketClient(object):
 
     def close(self):
         self.stop = True
-        self.thread.join()
 
     def on_open(self):
         if self.should_print:
@@ -123,6 +166,10 @@ class WebsocketClient(object):
         if self.should_print:
             print("\n-- Socket Closed --")
 
+    def check_heartbeat(self, msg):
+        now = time.time()
+        self.last_heartbeat = now
+
     def on_message(self, msg):
         if self.should_print:
             print(msg)
@@ -130,43 +177,35 @@ class WebsocketClient(object):
             self.mongo_collection.insert_one(msg)
 
     def on_error(self, e, data=None):
-        self.error = e
         self.stop = True
-        print('{} - data: {}'.format(e, data))
+        self.error = e
+        alog.error('{} - data: {}'.format(e, data))
+        self.close()
+
+
+class HeartbeatDelayExceededException(Exception):
+    pass
 
 
 if __name__ == "__main__":
     import sys
     import gdax
-    import time
-
 
     class MyWebsocketClient(gdax.WebsocketClient):
         def on_open(self):
             self.url = "wss://ws-feed.gdax.com/"
-            self.products = ["BTC-USD", "ETH-USD"]
+            self.products = ["BTC-USD"]
             self.message_count = 0
             print("Let's count the messages!")
 
         def on_message(self, msg):
-            print(json.dumps(msg, indent=4, sort_keys=True))
+            if msg.get('type', None) == 'heartbeat':
+                print(json.dumps(msg, indent=4, sort_keys=True))
             self.message_count += 1
 
         def on_close(self):
             print("-- Goodbye! --")
 
-
     wsClient = MyWebsocketClient()
-    wsClient.start()
     print(wsClient.url, wsClient.products)
-    try:
-        while True:
-            print("\nMessageCount =", "%i \n" % wsClient.message_count)
-            time.sleep(1)
-    except KeyboardInterrupt:
-        wsClient.close()
-
-    if wsClient.error:
-        sys.exit(1)
-    else:
-        sys.exit(0)
+    wsClient.start()

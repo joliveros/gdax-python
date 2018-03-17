@@ -7,6 +7,7 @@
 from bintrees import RBTree
 from decimal import Decimal
 import pickle
+import alog
 
 from gdax.public_client import PublicClient
 from gdax.websocket_client import WebsocketClient
@@ -60,7 +61,8 @@ class OrderBook(WebsocketClient):
         if self._log_to:
             pickle.dump(message, self._log_to)
 
-        sequence = message['sequence']
+        sequence = message.get('sequence', None)
+
         if self._sequence == -1:
             self.reset_book()
             return
@@ -263,6 +265,7 @@ if __name__ == '__main__':
 
         def on_message(self, message):
             super(OrderBookConsole, self).on_message(message)
+            alog.debug(message)
 
             # Calculate newest bid-ask spread
             bid = self.get_bid()
@@ -285,10 +288,9 @@ if __name__ == '__main__':
                     dt.datetime.now(), self.product_id, bid_depth, bid, ask_depth, ask))
 
     order_book = OrderBookConsole()
-    order_book.start()
+
     try:
-        while True:
-            time.sleep(10)
+        order_book.start()
     except KeyboardInterrupt:
         order_book.close()
 
