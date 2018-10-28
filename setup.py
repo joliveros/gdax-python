@@ -1,18 +1,23 @@
 #!/usr/bin/env python
 
+from os.path import realpath
+from pip._internal.download import PipSession
+from pip._internal.req import parse_requirements
 from setuptools import setup, find_packages
 
-install_requires = [
-    'bintrees==2.0.7',
-    'requests==2.13.0',
-    'six',
-    'websocket-client',
-    'pymongo==3.5.1'
-]
 
-tests_require = [
-    'pytest',
-    ]
+def get_reqs_from_file(file):
+    file_path = realpath(file)
+
+    # parse_requirements() returns generator of pip.req.InstallRequirement
+    # objects
+    install_reqs = parse_requirements(file_path, session=PipSession)
+    print(install_reqs)
+
+    # reqs is a list of requirement
+    # e.g. ['django==1.5.1', 'mezzanine==1.4.6']
+    return [str(ir.req) for ir in install_reqs]
+
 
 setup(
     name='gdax',
@@ -22,8 +27,7 @@ setup(
     license='MIT',
     url='https://github.com/danpaquin/gdax-python',
     packages=find_packages(),
-    install_requires=install_requires,
-    tests_require=tests_require,
+    install_requires=get_reqs_from_file('./requirements.txt'),
     description='The unofficial Python client for the GDAX API',
     download_url='https://github.com/danpaquin/gdax-Python/archive/master.zip',
     keywords=['gdax', 'gdax-api', 'orderbook', 'trade', 'bitcoin', 'ethereum', 'BTC', 'ETH', 'client', 'api', 'wrapper', 'exchange', 'crypto', 'currency', 'trading', 'trading-api', 'coinbase'],
